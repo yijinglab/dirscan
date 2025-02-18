@@ -2,12 +2,14 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/fatih/color"
 	"github.com/valyala/fasthttp"
 )
@@ -83,13 +85,14 @@ func worker(jobs <-chan string, wg *sync.WaitGroup, urls []string) {
 			defer wg.Done()
 			for _, baseURL := range urls {
 				target := formatURL(baseURL, dir)
-				statusCode, err := getStatusCode(client, target)
+				statusCode, body, err := getStatusCode(client, target)
 				if err != nil {
 					continue
 				}
 
+				title := extractTitle(body)
 				if statusCode != 404 {
-					printResult(target, statusCode)
+					printResult(target, statusCode, title)
 				}
 			}
 		}()
@@ -102,7 +105,7 @@ func formatURL(base, path string) string {
 	return base + "/" + path
 }
 
-func getStatusCode(client *fasthttp.Client, url string) (int, error) {
+func getStatusCode(client *fasthttp.Client, url string) (int, []byte, error) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
@@ -111,24 +114,47 @@ func getStatusCode(client *fasthttp.Client, url string) (int, error) {
 	req.SetRequestURI(url)
 	err := client.Do(req, resp)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	return resp.StatusCode(), nil
+	body := make([]byte, len(resp.Body()))
+	copy(body, resp.Body())
+	return resp.StatusCode(), body, nil
 }
 
-func printResult(url string, status int) {
+func extractTitle(body []byte) string {
+	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(body))
+	if err != nil {
+		return "N/A"
+	}
+	title := strings.TrimSpace(doc.Find("title").Text())
+	if title == "" {
+		return "No Title"
+	}
+	return title
+}
+
+func printResult(url string, status int, title string) {
 	var statusStr string
 	switch {
 	case status >= 200 && status < 300:
-		statusStr = green(status)
+		statusStr = green(fmt.Sprintf("%d", status))
 	case status >= 300 && status < 400:
-		statusStr = blue(status)
+		statusStr = blue(fmt.Sprintf("%d", status))
 	case status >= 400 && status < 500:
-		statusStr = yellow(status)
+		statusStr = yellow(fmt.Sprintf("%d", status))
 	default:
-		statusStr = red(status)
+		statusStr = red(fmt.Sprintf("%d", status))
 	}
-	fmt.Printf("[%s] %s\n", statusStr, url)
+
+	// 格式化输出为表格样式
+	fmt.Printf("%-40s %-10s %s\n", truncateString(url, 128), statusStr, truncateString(title, 128))
+}
+
+func truncateString(s string, maxLen int) string {
+	if len(s) > maxLen {
+		return s[:maxLen-3] + "..."
+	}
+	return s
 }
 
 func getURLs() []string {
